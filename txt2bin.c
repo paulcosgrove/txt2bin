@@ -54,14 +54,31 @@ static void convert_file(FILE *file)
                 continue;
             }
 
-            /* Try to parse a hexadecimal value */
-            if (hex_string_to_int(next, &value, &width))
+            /* Try to parse a quoted string */
+            if (*next == '"')
             {
-                /* Output the bytes on stdout */
-                int byte_count = (int) ceil((double) width / NIBBLES_PER_BYTE);
-                print_bytes(value, byte_count);
+                next++;
+                while (*next != '\0' && *next != '"')
+                {
+                    putchar(*next);
+                    next++;
+                }
+                if (*next == '"')
+                {
+                    next++;
+                }
             }
-            next = skip_non_whitespace(next);
+            else
+            {
+                /* Try to parse a hexadecimal value */
+                if (hex_string_to_int(next, &value, &width))
+                {
+                    /* Output the bytes on stdout */
+                    int byte_count = (int) ceil((double) width / NIBBLES_PER_BYTE);
+                    print_bytes(value, byte_count);
+                }
+                next = skip_non_whitespace(next);
+            }
         }
     }
 }
