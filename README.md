@@ -1,4 +1,4 @@
 txt2bin
 =======
 
-A text to binary converter
+A utility for converting hex values in an ASCII text file to binary.
