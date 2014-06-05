@@ -181,7 +181,7 @@ static char *skip_line(const char *s)
 
 static bool string_has_prefix(const char *s, const char *prefix)
 {
-    return strncmp(s, prefix, strlen(prefix));
+    return strncmp(s, prefix, strlen(prefix)) == 0;
 }
 
 static bool hex_string_to_int(const char *s, unsigned int *value, int *width)
@@ -189,7 +189,7 @@ static bool hex_string_to_int(const char *s, unsigned int *value, int *width)
     int items_scanned = sscanf(s, "%x%n", value, width); 
     if (string_has_prefix(s, "0x"))
     {
-        width -= 2;
+        *width -= 2;
     }
     return items_scanned == 1;
 }
