@@ -1,5 +1,5 @@
 /* 
- * txt2bin -- A program to convert an ASCII text file to a binary file
+ * txt2bin -- A program to create binary files using ASCII
  *
  * For usage information type:
  *
@@ -15,69 +15,135 @@
 #include <string.h>
 #include <ctype.h>
 #include <math.h>
+#include <assert.h>
 
-#define MAX_LINE_LENGTH     4096
-#define NIBBLES_PER_BYTE    2
-#define BYTE_MASK           0xff
-#define BITS_PER_BYTE       8
+#define NIBBLES_PER_BYTE        2
+#define BITS_PER_BYTE           8
+#define BYTE_MASK               0xff
 
-/* The name of the program, set from agv0 */
+#define MAX_LINE_LENGTH         4096
+#define COMMENT_CHAR            '#'
+#define QUOTE_CHAR              '"'
+#define BIG_ENDIAN_CHAR         '^'
+#define LITTLE_ENDIAN_CHAR      '_'
+#define BIG_ENDIAN_KEYWORD      "BIG_ENDIAN"
+#define LITTLE_ENDIAN_KEYWORD   "LITTLE_ENDIAN"
+
+enum byte_order 
+{
+    BIG_ENDIAN_BYTE_ORDER, 
+    LITTLE_ENDIAN_BYTE_ORDER
+}; 
+
+/* The name of this program */
 const char *program_name;
 
 static void print_usage(FILE *stream);
-static void print_bytes(unsigned int value, int nbytes);
+static void print_bytes(unsigned int value, int count, enum byte_order byte_order);
+static int  is_word_end(char c);
+static bool keyword(const char *s, const char *keyword, const char **rest);
+static bool quoted_text(const char *s, char quote_char, const char **rest);
 static char *skip_whitespace(const char *s);
 static char *skip_non_whitespace(const char *s);
 static char *skip_line(const char *s);
-static bool string_has_prefix(const char *s, const char *prefix);
-static bool hex_string_to_int(const char *s, unsigned int *value, int *width);
 
 static void convert_file(FILE *file)
 {
     char buffer[MAX_LINE_LENGTH];
+    enum byte_order default_byte_order = LITTLE_ENDIAN_BYTE_ORDER;
 
     while (fgets(buffer, sizeof(buffer), file))
     {
-        const char *next = buffer;
-        unsigned int value;
-        int width;
+        const char *look = buffer;
+        const char *rest = NULL;
 
-        while (*next != '\0')
+        while (*look != '\0')
         {
-            /* Skip leading whitespace */
-            next = skip_whitespace(next);
-
-            /* Skip comments */
-            if (*next == '#')
+            if (isspace(*look))
             {
-                next = skip_line(next);
-                continue;
+                /* 
+                 * Skip whitespace.
+                 */
+                look = skip_whitespace(look);
             }
-
-            /* Try to parse a quoted string */
-            if (*next == '"')
+            else if (*look == COMMENT_CHAR)
             {
-                next++;
-                while (*next != '\0' && *next != '"')
-                {
-                    putchar(*next);
-                    next++;
-                }
-                if (*next == '"')
-                {
-                    next++;
-                }
+                /* 
+                 * Skip comments.
+                 */
+                look = skip_line(look);
+            }
+            else if (quoted_text(look, QUOTE_CHAR, &rest))
+            {
+                /* 
+                 * Output quoted text after adjusting the results to exclude 
+                 * the quotes.
+                 */
+                printf("%.*s", (rest - 1) - (look + 1), look + 1); 
+                look = rest;
+            }
+            else if (keyword(look, BIG_ENDIAN_KEYWORD, &rest))
+            {
+                /* 
+                 * Set the default endianness to big-endian 
+                 */
+                default_byte_order = BIG_ENDIAN_BYTE_ORDER;
+                look = rest;
+            }
+            else if (keyword(look, LITTLE_ENDIAN_KEYWORD, &rest))
+            {
+                /* 
+                 * Set the default endianness to little-endian
+                 */
+                default_byte_order = LITTLE_ENDIAN_BYTE_ORDER;
+                look = rest;
             }
             else
             {
-                /* Try to parse a hexadecimal value */
-                if (hex_string_to_int(next, &value, &width))
+                /* 
+                 * Finally, try to parse a hex string.
+                 */
+                enum byte_order byte_order = default_byte_order;
+                unsigned int hex_string_value;
+                int hex_string_width;
+
+                /* 
+                 * Check for a byte order prefix on the hex value. If
+                 * found, override the default endianness for this value only.
+                 */
+                if (*look == BIG_ENDIAN_CHAR)
                 {
-                    /* Output the bytes on stdout */
-                    int byte_count = (int) ceil((double) width / NIBBLES_PER_BYTE);
-                    print_bytes(value, byte_count);
+                    byte_order = BIG_ENDIAN_BYTE_ORDER;
+                    look++;
                 }
-                next = skip_non_whitespace(next);
+                else if (*look == LITTLE_ENDIAN_CHAR)
+                {
+                    byte_order = LITTLE_ENDIAN_BYTE_ORDER;
+                    look++;
+                }
+
+                /* 
+                 * Skip optional '0x' hex prefix to prevent it from being 
+                 * included in the result of sscanf's "%n" conversion specifier. 
+                 */  
+                if (strncmp("0x", look, 2) == 0)
+                {
+                    look += 2;
+                }
+
+                /* Parse hex string */
+                if (sscanf(look, "%x%n", &hex_string_value, &hex_string_width) == 1)
+                {
+                    /* 
+                     * Determine the number of bytes to output from the number 
+                     * of hex digits in the hex string. 
+                     */
+                    int byte_count = (int) ceil((double) hex_string_width / 
+                            NIBBLES_PER_BYTE);
+
+                    print_bytes(hex_string_value, byte_count, byte_order);
+                }
+                look = skip_non_whitespace(look);
             }
         }
     }
@@ -110,7 +176,6 @@ int main(int argc, char **argv)
     }
 
     /* Parse remaining arguments */
-
     if (argc - optind > 1)
     {
         fprintf(stderr, 
@@ -152,12 +217,22 @@ static void print_usage(FILE *stream)
     fprintf(stream, "If FILE is missing or is '-', the program will read from stdin.\n");
 }
 
-static void print_bytes(unsigned int value, int count)
+static void print_bytes(unsigned int value, int count, enum byte_order byte_order)
 {
     int i;
-    for (i = 0; i < count; i++)
+    if (byte_order == LITTLE_ENDIAN_BYTE_ORDER)
     {
-        putchar(value>>(i * BITS_PER_BYTE) & BYTE_MASK);
+        for (i = 0; i < count; i++)
+        {
+            putchar((value >> (i * BITS_PER_BYTE)) & BYTE_MASK);
+        }
+    }
+    else
+    {
+        for (i = count-1; i >= 0; i--)
+        {
+            putchar((value >> (i * BITS_PER_BYTE)) & BYTE_MASK);
+        }
     }
 }
 
@@ -179,18 +254,38 @@ static char *skip_line(const char *s)
     return (char *) s;
 }
 
-static bool string_has_prefix(const char *s, const char *prefix)
+static int is_word_end(char c)
 {
-    return strncmp(s, prefix, strlen(prefix)) == 0;
+    return c == '\0' || !isgraph(c);
 }
 
-static bool hex_string_to_int(const char *s, unsigned int *value, int *width)
+static bool keyword(const char *s, const char *keyword, const char **rest)
 {
-    int items_scanned = sscanf(s, "%x%n", value, width); 
-    if (string_has_prefix(s, "0x"))
+    size_t keyword_length = strlen(keyword);
+
+    if (strncmp(s, keyword, keyword_length) == 0)
     {
-        *width -= 2;
+        s += keyword_length;
+        if (is_word_end(*s))
+        {
+            if (rest) *rest = s;
+            return true;
+        }
     }
-    return items_scanned == 1;
+    return false;
+}
+
+static bool quoted_text(const char *s, char quote_char, const char **rest)
+{
+    if (*s == quote_char)
+    {
+        const char *end_quote = strchr(s + 1, quote_char);
+        if (end_quote)
+        {
+            if (rest) *rest = end_quote + 1;
+            return true;
+        }
+    }
+    return false;
 }
 
